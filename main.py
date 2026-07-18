@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Form, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from google import genai
+from google.genai import types
 from pydantic import BaseModel, Field
 
 _client = None
@@ -28,7 +30,7 @@ def get_genai_client() -> genai.Client | None:
 
 Category = Literal["Road Hazard", "Sanitation Breaches", "Grid Infrastructure"]
 Urgency = Literal["High", "Medium"]
-Status = Literal["OPEN", "DISPATCHED"]
+Status = Literal["OPEN", "DISPATCHED", "RESOLVED"]
 
 METADATA_SYSTEM_INSTRUCTION = (
     'Exclusively return a minified JSON object containing keys: '
@@ -44,6 +46,9 @@ DISPATCH_SYSTEM_INSTRUCTION = (
 )
 
 app = FastAPI(title="Civic Pulse Spatial Grievance Matrix")
+UPLOAD_DIR = "static/uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -61,6 +66,7 @@ class CitizenPayload(BaseModel):
     transcript_text: str
     latitude: float
     longitude: float
+    category_override: str | None = None
 
 
 class Ticket(BaseModel):
@@ -77,6 +83,7 @@ class Ticket(BaseModel):
     generated_dispatch_memo: str = "PENDING_APPROVAL"
     complaint_texts: list[str]
     reporter_phones: list[str]
+    complaint_images: list[str] = Field(default_factory=list)
     updated_at: str
 
 
@@ -140,14 +147,21 @@ def normalize_metadata(metadata: dict[str, str]) -> dict[str, str]:
     }
 
 
-def extract_metadata(text: str) -> dict[str, str]:
+def extract_metadata(text: str, image_bytes: bytes | None = None, mime_type: str | None = None) -> dict[str, str]:
     client = get_genai_client()
     if not client:
         return normalize_metadata(infer_metadata_locally(text))
     try:
+        contents = [
+            METADATA_SYSTEM_INSTRUCTION,
+            f"Citizen report: {text}"
+        ]
+        if image_bytes and mime_type:
+            contents.append(types.Part.from_bytes(data=image_bytes, mime_type=mime_type))
+            
         response = client.models.generate_content(
             model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-            contents=f"{METADATA_SYSTEM_INSTRUCTION}\nCitizen report: {text}",
+            contents=contents,
         )
         parsed = parse_minified_json(response.text or "{}")
     except Exception:
@@ -217,7 +231,7 @@ def seed_golden_state() -> None:
         "The pothole is growing after rain and buses are braking suddenly at the gate.",
         "Cars keep crossing into oncoming traffic to avoid the broken road surface.",
     ]
-    ticket = Ticket(
+    ticket1 = Ticket(
         ticket_id="cluster-uuid-8801",
         title=title_for("Road Hazard"),
         category="Road Hazard",
@@ -226,12 +240,59 @@ def seed_golden_state() -> None:
         ai_impact_synthesis="Four unique citizens have verified a dangerous road depression near the primary gate. Aggregated inputs report frequent evasive maneuvers into opposing traffic lanes, indicating severe collision risks.",
         representative_lat=10.0625,
         representative_lon=76.5312,
+        status="OPEN",
         urgency="High",
         complaint_texts=reports,
         reporter_phones=[f"+91987654321{i}" for i in range(4)],
+        complaint_images=[],
         updated_at=now_iso(),
     )
-    TICKETS.append(ticket)
+    TICKETS.append(ticket1)
+
+    reports2 = [
+        "Piles of uncollected garbage near the food court are attracting stray dogs.",
+        "Overflowing dumpsters near the canteen have created a severe sanitation hazard.",
+    ]
+    ticket2 = Ticket(
+        ticket_id="cluster-uuid-8802",
+        title=title_for("Sanitation Breaches"),
+        category="Sanitation Breaches",
+        composite_severity="Elevated",
+        active_report_count=2,
+        ai_impact_synthesis="Multiple complaints received regarding overflowing waste containers near the dining quarters, causing safety and sanitation concerns.",
+        representative_lat=10.0618,
+        representative_lon=76.5305,
+        status="DISPATCHED",
+        urgency="Medium",
+        generated_dispatch_memo="OFFICIAL DISPATCH ORDER - DEPT OF PUBLIC WORKS. Location: Point [10.0618, 76.5305]. Urgency: Medium. Action Required: Dispatched sanitation crew to clean up canteen area dumpsters.",
+        complaint_texts=reports2,
+        reporter_phones=["+919876543210", "+919876543219"],
+        complaint_images=[],
+        updated_at=now_iso(),
+    )
+    TICKETS.append(ticket2)
+
+    reports3 = [
+        "The streetlight at the main crossroad is flickering and going completely dark.",
+    ]
+    ticket3 = Ticket(
+        ticket_id="cluster-uuid-8803",
+        title=title_for("Grid Infrastructure"),
+        category="Grid Infrastructure",
+        composite_severity="Watch",
+        active_report_count=1,
+        ai_impact_synthesis="A single citizen reported a utility failure where a critical streetlight is dark. The grid utility team has addressed the bulb connection.",
+        representative_lat=10.0631,
+        representative_lon=76.5320,
+        status="RESOLVED",
+        urgency="Medium",
+        generated_dispatch_memo="OFFICIAL DISPATCH ORDER - DEPT OF PUBLIC WORKS. Location: Point [10.0631, 76.5320]. Urgency: Medium. Action Required: Replaced flickering street lamp bulb.",
+        complaint_texts=reports3,
+        reporter_phones=["+919876543210"],
+        complaint_images=[],
+        updated_at=now_iso(),
+    )
+    TICKETS.append(ticket3)
 
 
 seed_golden_state()
@@ -265,25 +326,64 @@ def reset_demo() -> list[Ticket]:
 
 
 @app.get("/api/tickets")
-def list_tickets() -> list[Ticket]:
+def list_tickets(urgency: str | None = None) -> list[Ticket]:
+    if urgency and urgency != "all":
+        return [t for t in TICKETS if t.urgency == urgency]
     return TICKETS
 
 
 @app.post("/api/grievances/submit", response_model=Ticket)
-def submit_grievance(payload: CitizenPayload) -> Ticket:
-    metadata = extract_metadata(payload.transcript_text)
-    category = metadata["category"]
-    urgency = metadata["urgency"]
+def submit_grievance(
+    reporter_phone: str = Form("+919876543210"),
+    transcript_text: str = Form(...),
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    category_override: str | None = Form(None),
+    file: UploadFile | None = File(None)
+) -> Ticket:
+    image_bytes = None
+    mime_type = None
+    image_url = None
+    
+    if file and file.filename:
+        file_ext = os.path.splitext(file.filename)[1]
+        unique_filename = f"{uuid.uuid4().hex}{file_ext}"
+        file_path = os.path.join(UPLOAD_DIR, unique_filename)
+        
+        try:
+            image_bytes = file.file.read()
+            file.file.seek(0)
+            mime_type = file.content_type
+            
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            image_url = f"/static/uploads/{unique_filename}"
+        except Exception as e:
+            print(f"Error saving uploaded image: {e}")
+
+    valid_categories = ["Road Hazard", "Sanitation Breaches", "Grid Infrastructure"]
+    if category_override in valid_categories:
+        category = category_override
+        lowered = transcript_text.lower()
+        urgency = "High" if any(word in lowered for word in ["massive", "danger", "wildly", "urgent", "fire", "collision", "blocked"]) else "Medium"
+    else:
+        metadata = extract_metadata(transcript_text, image_bytes, mime_type)
+        category = metadata["category"]
+        urgency = metadata["urgency"]
+        
     for ticket in TICKETS:
         if (
             ticket.status == "OPEN"
             and ticket.category == category
-            and check_spatial_match(payload.latitude, payload.longitude, ticket.representative_lat, ticket.representative_lon)
+            and check_spatial_match(latitude, longitude, ticket.representative_lat, ticket.representative_lon)
         ):
-            ticket.complaint_texts.append(payload.transcript_text)
-            ticket.reporter_phones.append(payload.reporter_phone)
+            ticket.complaint_texts.append(transcript_text)
+            ticket.reporter_phones.append(reporter_phone)
+            if image_url:
+                ticket.complaint_images.append(image_url)
             ticket.urgency = "High" if "High" in [ticket.urgency, urgency] else "Medium"
             return refresh_ticket(ticket)
+            
     ticket = Ticket(
         ticket_id=f"cluster-{uuid.uuid4().hex[:8]}",
         title=title_for(category),
@@ -291,11 +391,12 @@ def submit_grievance(payload: CitizenPayload) -> Ticket:
         composite_severity=severity_for(1, urgency),
         active_report_count=1,
         ai_impact_synthesis="1 citizen report logged for this new localized grievance cluster. Awaiting corroborating reports.",
-        representative_lat=payload.latitude,
-        representative_lon=payload.longitude,
+        representative_lat=latitude,
+        representative_lon=longitude,
         urgency=urgency,  # type: ignore[arg-type]
-        complaint_texts=[payload.transcript_text],
-        reporter_phones=[payload.reporter_phone],
+        complaint_texts=[transcript_text],
+        reporter_phones=[reporter_phone],
+        complaint_images=[image_url] if image_url else [],
         updated_at=now_iso(),
     )
     TICKETS.append(ticket)
@@ -331,6 +432,16 @@ def dispatch_ticket(ticket_id: str) -> DispatchResponse:
     ticket.generated_dispatch_memo = memo
     ticket.status = "DISPATCHED"
     return DispatchResponse(ticket_id=ticket.ticket_id, generated_dispatch_memo=memo, status=ticket.status)
+
+
+@app.post("/api/tickets/{ticket_id}/resolve", response_model=Ticket)
+def resolve_ticket(ticket_id: str) -> Ticket:
+    ticket = next((item for item in TICKETS if item.ticket_id == ticket_id), None)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket.status = "RESOLVED"
+    ticket.updated_at = now_iso()
+    return ticket
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
