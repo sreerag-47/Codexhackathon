@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
@@ -48,6 +49,12 @@ DISPATCH_SYSTEM_INSTRUCTION = (
 app = FastAPI(title="Civic Pulse Spatial Grievance Matrix")
 UPLOAD_DIR = "static/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@app.on_event("startup")
+def startup_event():
+    init_db()
+    if not get_all_tickets():
+        seed_golden_state()
 
 app.add_middleware(
     CORSMiddleware,
@@ -103,6 +110,110 @@ class DemoScript(BaseModel):
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+DB_PATH = "civic_pulse.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tickets (
+            ticket_id TEXT PRIMARY KEY,
+            title TEXT,
+            category TEXT,
+            composite_severity TEXT,
+            active_report_count INTEGER,
+            ai_impact_synthesis TEXT,
+            representative_lat REAL,
+            representative_lon REAL,
+            status TEXT,
+            urgency TEXT,
+            generated_dispatch_memo TEXT,
+            complaint_texts TEXT,
+            reporter_phones TEXT,
+            complaint_images TEXT,
+            updated_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def save_ticket(ticket: Ticket) -> None:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO tickets (
+            ticket_id, title, category, composite_severity, active_report_count,
+            ai_impact_synthesis, representative_lat, representative_lon, status,
+            urgency, generated_dispatch_memo, complaint_texts, reporter_phones,
+            complaint_images, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ticket_id) DO UPDATE SET
+            title=excluded.title,
+            category=excluded.category,
+            composite_severity=excluded.composite_severity,
+            active_report_count=excluded.active_report_count,
+            ai_impact_synthesis=excluded.ai_impact_synthesis,
+            representative_lat=excluded.representative_lat,
+            representative_lon=excluded.representative_lon,
+            status=excluded.status,
+            urgency=excluded.urgency,
+            generated_dispatch_memo=excluded.generated_dispatch_memo,
+            complaint_texts=excluded.complaint_texts,
+            reporter_phones=excluded.reporter_phones,
+            complaint_images=excluded.complaint_images,
+            updated_at=excluded.updated_at
+    """, (
+        ticket.ticket_id, ticket.title, ticket.category, ticket.composite_severity,
+        ticket.active_report_count, ticket.ai_impact_synthesis, ticket.representative_lat,
+        ticket.representative_lon, ticket.status, ticket.urgency, ticket.generated_dispatch_memo,
+        json.dumps(ticket.complaint_texts), json.dumps(ticket.reporter_phones),
+        json.dumps(ticket.complaint_images), ticket.updated_at
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_all_tickets(urgency: str | None = None) -> list[Ticket]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    if urgency and urgency != "all":
+        cursor.execute("SELECT * FROM tickets WHERE urgency = ?", (urgency,))
+    else:
+        cursor.execute("SELECT * FROM tickets")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    tickets = []
+    for row in rows:
+        tickets.append(Ticket(
+            ticket_id=row[0],
+            title=row[1],
+            category=row[2],
+            composite_severity=row[3],
+            active_report_count=row[4],
+            ai_impact_synthesis=row[5],
+            representative_lat=row[6],
+            representative_lon=row[7],
+            status=row[8],
+            urgency=row[9],
+            generated_dispatch_memo=row[10],
+            complaint_texts=json.loads(row[11]),
+            reporter_phones=json.loads(row[12]),
+            complaint_images=json.loads(row[13]),
+            updated_at=row[14]
+        ))
+    return tickets
+
+
+def clear_tickets() -> None:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM tickets")
+    conn.commit()
+    conn.close()
 
 
 def check_spatial_match(lat1: float, lon1: float, lat2: float, lon2: float) -> bool:
@@ -220,11 +331,8 @@ def refresh_ticket(ticket: Ticket) -> Ticket:
     return ticket
 
 
-TICKETS: list[Ticket] = []
-
-
 def seed_golden_state() -> None:
-    TICKETS.clear()
+    clear_tickets()
     reports = [
         "There is a massive pothole right outside the main gate, vehicles are swerving wildly.",
         "Two scooters nearly crashed while avoiding the same road depression near the entrance.",
@@ -247,7 +355,7 @@ def seed_golden_state() -> None:
         complaint_images=[],
         updated_at=now_iso(),
     )
-    TICKETS.append(ticket1)
+    save_ticket(ticket1)
 
     reports2 = [
         "Piles of uncollected garbage near the food court are attracting stray dogs.",
@@ -270,7 +378,7 @@ def seed_golden_state() -> None:
         complaint_images=[],
         updated_at=now_iso(),
     )
-    TICKETS.append(ticket2)
+    save_ticket(ticket2)
 
     reports3 = [
         "The streetlight at the main crossroad is flickering and going completely dark.",
@@ -292,10 +400,7 @@ def seed_golden_state() -> None:
         complaint_images=[],
         updated_at=now_iso(),
     )
-    TICKETS.append(ticket3)
-
-
-seed_golden_state()
+    save_ticket(ticket3)
 
 
 @app.get("/")
@@ -305,7 +410,8 @@ def index() -> FileResponse:
 
 @app.get("/api/health")
 def health() -> dict[str, str | int]:
-    return {"status": "ok", "open_tickets": len([ticket for ticket in TICKETS if ticket.status == "OPEN"])}
+    tickets = get_all_tickets()
+    return {"status": "ok", "open_tickets": len([ticket for ticket in tickets if ticket.status == "OPEN"])}
 
 
 @app.get("/api/demo/script", response_model=DemoScript)
@@ -322,14 +428,53 @@ def demo_script() -> DemoScript:
 @app.post("/api/demo/reset")
 def reset_demo() -> list[Ticket]:
     seed_golden_state()
-    return TICKETS
+    return get_all_tickets()
 
 
 @app.get("/api/tickets")
-def list_tickets(urgency: str | None = None) -> list[Ticket]:
-    if urgency and urgency != "all":
-        return [t for t in TICKETS if t.urgency == urgency]
-    return TICKETS
+def list_tickets(urgency: str | None = None, category: str | None = None, status: str | None = None) -> list[Ticket]:
+    tickets = get_all_tickets(urgency)
+    if category and category != "all":
+        tickets = [t for t in tickets if t.category == category]
+    if status and status != "all":
+        tickets = [t for t in tickets if t.status == status]
+    return tickets
+
+
+@app.get("/api/tickets/user/{reporter_phone}")
+def get_user_tickets(reporter_phone: str) -> list[Ticket]:
+    """Return all tickets that contain the given reporter phone."""
+    all_tickets = get_all_tickets()
+    return [t for t in all_tickets if reporter_phone in t.reporter_phones]
+
+
+@app.get("/api/tickets/{ticket_id}", response_model=Ticket)
+def get_ticket(ticket_id: str) -> Ticket:
+    tickets = get_all_tickets()
+    ticket = next((t for t in tickets if t.ticket_id == ticket_id), None)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return ticket
+
+
+@app.get("/api/stats")
+def get_stats() -> dict:
+    """Return high-level statistics for the authority dashboard."""
+    tickets = get_all_tickets()
+    total = len(tickets)
+    by_status = {s: sum(1 for t in tickets if t.status == s) for s in ["OPEN", "DISPATCHED", "RESOLVED"]}
+    by_category = {}
+    for t in tickets:
+        by_category[t.category] = by_category.get(t.category, 0) + 1
+    by_urgency = {u: sum(1 for t in tickets if t.urgency == u) for u in ["High", "Medium"]}
+    total_reports = sum(t.active_report_count for t in tickets)
+    return {
+        "total_tickets": total,
+        "total_citizen_reports": total_reports,
+        "by_status": by_status,
+        "by_category": by_category,
+        "by_urgency": by_urgency,
+    }
 
 
 @app.post("/api/grievances/submit", response_model=Ticket)
@@ -371,7 +516,8 @@ def submit_grievance(
         category = metadata["category"]
         urgency = metadata["urgency"]
         
-    for ticket in TICKETS:
+    tickets = get_all_tickets()
+    for ticket in tickets:
         if (
             ticket.status == "OPEN"
             and ticket.category == category
@@ -382,7 +528,9 @@ def submit_grievance(
             if image_url:
                 ticket.complaint_images.append(image_url)
             ticket.urgency = "High" if "High" in [ticket.urgency, urgency] else "Medium"
-            return refresh_ticket(ticket)
+            refreshed = refresh_ticket(ticket)
+            save_ticket(refreshed)
+            return refreshed
             
     ticket = Ticket(
         ticket_id=f"cluster-{uuid.uuid4().hex[:8]}",
@@ -399,13 +547,14 @@ def submit_grievance(
         complaint_images=[image_url] if image_url else [],
         updated_at=now_iso(),
     )
-    TICKETS.append(ticket)
+    save_ticket(ticket)
     return ticket
 
 
 @app.post("/api/tickets/{ticket_id}/dispatch", response_model=DispatchResponse)
 def dispatch_ticket(ticket_id: str) -> DispatchResponse:
-    ticket = next((item for item in TICKETS if item.ticket_id == ticket_id), None)
+    tickets = get_all_tickets()
+    ticket = next((item for item in tickets if item.ticket_id == ticket_id), None)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     prompt = (
@@ -431,16 +580,19 @@ def dispatch_ticket(ticket_id: str) -> DispatchResponse:
         )
     ticket.generated_dispatch_memo = memo
     ticket.status = "DISPATCHED"
+    save_ticket(ticket)
     return DispatchResponse(ticket_id=ticket.ticket_id, generated_dispatch_memo=memo, status=ticket.status)
 
 
 @app.post("/api/tickets/{ticket_id}/resolve", response_model=Ticket)
 def resolve_ticket(ticket_id: str) -> Ticket:
-    ticket = next((item for item in TICKETS if item.ticket_id == ticket_id), None)
+    tickets = get_all_tickets()
+    ticket = next((item for item in tickets if item.ticket_id == ticket_id), None)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     ticket.status = "RESOLVED"
     ticket.updated_at = now_iso()
+    save_ticket(ticket)
     return ticket
 
 
