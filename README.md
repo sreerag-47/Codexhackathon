@@ -41,3 +41,17 @@ Open <http://127.0.0.1:8000>.
 - `POST /api/tickets/{ticket_id}/dispatch` — synthesize and store a dispatch memo.
 - `GET /api/demo/script` — deterministic pitch flow details.
 - `POST /api/demo/reset` — restore seeded golden state.
+
+
+## Vercel Frontend Deployment
+
+The static dashboard is configured to call the Render backend at `https://voxpop-ixt9.onrender.com`.
+
+1. Import this repository into Vercel.
+2. Set **Framework Preset** to `Other`.
+3. Set **Root Directory** to `static`.
+4. Leave **Build Command** empty.
+5. Set **Output Directory** to `.`.
+6. Deploy, then open the generated Vercel URL and confirm the dashboard loads tickets from the Render backend.
+
+If the Render service is sleeping on the free tier, open `https://voxpop-ixt9.onrender.com/api/health` once before the live demo to wake it up.
