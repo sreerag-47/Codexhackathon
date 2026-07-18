@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Civic Pulse Spatial Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: radial-gradient(circle at 20% 20%, #164e63 0, #020617 38%, #0f172a 100%); }
+    .map-grid { background-image: linear-gradient(rgba(148,163,184,.12) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,.12) 1px, transparent 1px); background-size: 32px 32px; }
+  </style>
+</head>
+<body class="min-h-screen text-slate-100">
+  <main class="grid min-h-screen grid-cols-1 lg:grid-cols-[50vw_50vw]">
+    <section class="border-r border-cyan-400/20 p-8">
+      <div class="mb-8">
+        <p class="text-xs uppercase tracking-[0.45em] text-cyan-300">Citizen Sandbox</p>
+        <h1 class="mt-3 text-5xl font-black tracking-tight">Civic Pulse</h1>
+        <p class="mt-3 text-slate-300">Speak, pin a location, and submit. Spatial clustering updates instantly.</p>
+      </div>
+
+      <form id="report-form" class="space-y-5 rounded-3xl border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
+        <label class="block text-sm font-semibold text-slate-300">Reporter phone</label>
+        <input id="phone" class="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 outline-none ring-cyan-400 focus:ring-2" value="+919876543210" />
+
+        <div class="flex items-center justify-between gap-3">
+          <label class="text-sm font-semibold text-slate-300">Live transcript</label>
+          <button id="mic" type="button" class="rounded-full bg-cyan-400 px-4 py-2 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-400/30">🎙️ Dictate</button>
+        </div>
+        <textarea id="transcript" rows="5" class="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 outline-none ring-cyan-400 focus:ring-2">There is a massive pothole right outside the main gate, vehicles are swerving wildly into oncoming traffic to avoid it.</textarea>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="text-sm font-semibold text-slate-300">Latitude</label><input id="lat" class="mt-2 w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3" value="10.0625" /></div>
+          <div><label class="text-sm font-semibold text-slate-300">Longitude</label><input id="lon" class="mt-2 w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3" value="76.5312" /></div>
+        </div>
+
+        <div class="rounded-2xl border border-cyan-300/20 bg-cyan-950/20 p-4">
+          <div class="mb-2 flex justify-between text-xs uppercase tracking-widest text-cyan-200"><span>Interactive SVG Grid</span><span id="coord-label">10.0625, 76.5312</span></div>
+          <svg id="map" viewBox="0 0 500 320" class="map-grid h-80 w-full cursor-crosshair rounded-xl border border-slate-700 bg-slate-900/80">
+            <defs><radialGradient id="hot" cx="50%" cy="50%"><stop offset="0%" stop-color="#ef4444"/><stop offset="100%" stop-color="#7f1d1d"/></radialGradient></defs>
+            <path d="M30 245 C130 210 160 125 265 146 S390 185 465 72" fill="none" stroke="#38bdf8" stroke-width="6" stroke-linecap="round" opacity=".55"/>
+            <g id="map-nodes"></g>
+            <circle id="pin" cx="250" cy="160" r="8" fill="#22d3ee" stroke="white" stroke-width="3"/>
+          </svg>
+        </div>
+
+        <button class="w-full rounded-2xl bg-gradient-to-r from-emerald-400 to-cyan-400 px-6 py-4 text-lg font-black text-slate-950 shadow-xl shadow-emerald-500/20">Submit Grievance</button>
+        <p id="status" class="text-sm text-emerald-300"></p>
+      </form>
+    </section>
+
+    <section class="p-8">
+      <div class="mb-6 flex items-center justify-between">
+        <div><p class="text-xs uppercase tracking-[0.45em] text-rose-300">Density Matrix</p><h2 class="mt-2 text-4xl font-black">Live Work Queue</h2></div>
+        <div class="flex gap-2"><button id="reset" class="rounded-xl border border-rose-300/30 px-4 py-2 text-sm font-bold text-rose-100">Reset Demo</button><button id="refresh" class="rounded-xl border border-white/10 px-4 py-2 text-sm font-bold text-slate-200">Refresh</button></div>
+      </div>
+      <div id="tickets" class="space-y-4"></div>
+    </section>
+  </main>
+
+  <script>
+    const latEl = document.getElementById('lat');
+    const lonEl = document.getElementById('lon');
+    const transcriptEl = document.getElementById('transcript');
+    const statusEl = document.getElementById('status');
+    const coordLabel = document.getElementById('coord-label');
+    const pin = document.getElementById('pin');
+    let tickets = [];
+
+    function coordsToPixel(lat, lon) {
+      return { x: ((lon - 76.5295) / 0.0034) * 500, y: 320 - ((lat - 10.0607) / 0.0030) * 320 };
+    }
+    function pixelToCoords(x, y) {
+      return { lat: 10.0607 + ((320 - y) / 320) * 0.0030, lon: 76.5295 + (x / 500) * 0.0034 };
+    }
+    function setPinFromCoords(lat, lon) {
+      const point = coordsToPixel(lat, lon);
+      pin.setAttribute('cx', Math.max(0, Math.min(500, point.x)));
+      pin.setAttribute('cy', Math.max(0, Math.min(320, point.y)));
+      coordLabel.textContent = `${Number(lat).toFixed(4)}, ${Number(lon).toFixed(4)}`;
+    }
+
+    document.getElementById('mic').addEventListener('click', () => {
+      const SpeechRecognition = window.webkitSpeechRecognition || window.SpeechRecognition;
+      if (!SpeechRecognition) { statusEl.textContent = 'Speech recognition is not available in this browser.'; return; }
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.onresult = (event) => { transcriptEl.value = event.results[0][0].transcript; };
+      recognition.start();
+    });
+
+    document.getElementById('map').addEventListener('click', (event) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / rect.width) * 500;
+      const y = ((event.clientY - rect.top) / rect.height) * 320;
+      const coords = pixelToCoords(x, y);
+      latEl.value = coords.lat.toFixed(6);
+      lonEl.value = coords.lon.toFixed(6);
+      setPinFromCoords(coords.lat, coords.lon);
+    });
+
+    async function loadTickets() {
+      const response = await fetch('/api/tickets');
+      tickets = await response.json();
+      renderTickets();
+      renderMapNodes();
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[char]));
+    }
+
+    function renderMapNodes() {
+      const group = document.getElementById('map-nodes');
+      group.innerHTML = tickets.map(ticket => {
+        const p = coordsToPixel(ticket.representative_lat, ticket.representative_lon);
+        const hot = ticket.active_report_count > 3;
+        return `<g><circle class="${hot ? 'animate-ping' : ''}" cx="${p.x}" cy="${p.y}" r="${10 + ticket.active_report_count * 3}" fill="${hot ? '#ef4444' : '#f97316'}" opacity=".45"></circle><circle cx="${p.x}" cy="${p.y}" r="${6 + ticket.active_report_count}" fill="url(#hot)" stroke="white" stroke-width="2"></circle><text x="${p.x + 14}" y="${p.y - 12}" fill="white" font-size="13" font-weight="800">${ticket.active_report_count}</text></g>`;
+      }).join('');
+    }
+
+    function renderTickets() {
+      document.getElementById('tickets').innerHTML = tickets.map(ticket => {
+        const hot = ticket.active_report_count > 3;
+        const safeCategory = escapeHtml(ticket.category);
+        const safeTitle = escapeHtml(ticket.title);
+        const safeSynthesis = escapeHtml(ticket.ai_impact_synthesis);
+        const safeMemo = escapeHtml(ticket.generated_dispatch_memo);
+        const safeStatus = escapeHtml(ticket.status);
+        return `<article class="rounded-3xl border ${hot ? 'border-rose-400/70 bg-rose-950/30' : 'border-white/10 bg-slate-950/70'} p-5 shadow-2xl">
+          <div class="flex items-start justify-between gap-3"><div><p class="text-sm font-black ${hot ? 'text-rose-200' : 'text-cyan-200'}">[${safeCategory}] ${ticket.active_report_count} Active Claims Combined</p><h3 class="mt-2 text-2xl font-black">${safeTitle}</h3></div><span class="rounded-full ${hot ? 'bg-rose-500 animate-pulse' : 'bg-amber-400'} px-3 py-1 text-xs font-black text-slate-950">${ticket.composite_severity}</span></div>
+          <p class="mt-4 text-slate-300">${safeSynthesis}</p>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-xs text-slate-400"><span>Lat ${ticket.representative_lat.toFixed(4)}</span><span>Lon ${ticket.representative_lon.toFixed(4)}</span><span>${safeStatus}</span></div>
+          <button data-dispatch="${ticket.ticket_id}" class="mt-4 rounded-xl bg-white px-4 py-2 text-sm font-black text-slate-950">Generate Dispatch</button>
+          <pre class="mt-3 whitespace-pre-wrap rounded-xl bg-slate-950/80 p-3 text-xs text-slate-300">${safeMemo}</pre>
+        </article>`;
+      }).join('');
+      document.querySelectorAll('[data-dispatch]').forEach(button => button.addEventListener('click', async () => {
+        await fetch(`/api/tickets/${button.dataset.dispatch}/dispatch`, { method: 'POST' });
+        await loadTickets();
+      }));
+    }
+
+    document.getElementById('report-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const response = await fetch('/api/grievances/submit', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reporter_phone: document.getElementById('phone').value, transcript_text: transcriptEl.value, latitude: Number(latEl.value), longitude: Number(lonEl.value) })
+      });
+      const ticket = await response.json();
+      statusEl.textContent = `Cluster ${ticket.ticket_id} updated to ${ticket.active_report_count} active claims.`;
+      await loadTickets();
+    });
+
+    document.getElementById('reset').addEventListener('click', async () => {
+      await fetch('/api/demo/reset', { method: 'POST' });
+      statusEl.textContent = 'Demo reset to the golden four-report Road Hazard cluster.';
+      await loadTickets();
+    });
+    document.getElementById('refresh').addEventListener('click', loadTickets);
+    setPinFromCoords(Number(latEl.value), Number(lonEl.value));
+    loadTickets();
+  </script>
+</body>
+</html>
