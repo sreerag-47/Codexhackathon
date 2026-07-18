@@ -31,6 +31,9 @@ DISPATCH_SYSTEM_INSTRUCTION = (
     "Urgency: [Level]. Action Required: [Synthesized structural summary of all citizen reports]."
 )
 
+logger = logging.getLogger("civic_pulse")
+DEDUPE_WINDOW_SECONDS = 10
+
 app = FastAPI(title="Civic Pulse Spatial Grievance Matrix")
 app.add_middleware(
     CORSMiddleware,
@@ -107,7 +110,16 @@ def infer_metadata_locally(text: str) -> dict[str, str]:
 
 def parse_minified_json(raw: str) -> dict[str, str]:
     match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-    return json.loads(match.group(0) if match else raw)
+    json_text = match.group(0) if match else raw
+    try:
+        parsed = json.loads(json_text)
+    except json.JSONDecodeError:
+        logger.warning("Gemini metadata response was not valid JSON; using local fallback. Raw response: %s", raw[:240])
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("Gemini metadata response was JSON but not an object; using local fallback.")
+        return {}
+    return parsed
 
 
 def normalize_metadata(metadata: dict[str, str]) -> dict[str, str]:
@@ -218,6 +230,28 @@ def seed_golden_state() -> None:
 seed_golden_state()
 
 
+
+
+def mask_phone(phone: str) -> str:
+    digits = re.sub(r"\D", "", phone)
+    if len(digits) < 4:
+        return "****"
+    return f"***-***-{digits[-4:]}"
+
+
+def public_ticket(ticket: Ticket) -> Ticket:
+    safe = ticket.copy(deep=True)
+    safe.reporter_phones = [mask_phone(phone) for phone in ticket.reporter_phones]
+    return safe
+
+
+def is_duplicate_submission(reporter_phone: str, ticket_id: str) -> bool:
+    key = (reporter_phone, ticket_id)
+    current_time = datetime.now(timezone.utc)
+    last_seen = DEDUPE_CACHE.get(key)
+    DEDUPE_CACHE[key] = current_time
+    return last_seen is not None and current_time - last_seen < timedelta(seconds=DEDUPE_WINDOW_SECONDS)
+
 def apply_no_cache_cors_headers(response: Response) -> Response:
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD"
@@ -235,6 +269,16 @@ def cors_preflight(full_path: str, response: Response) -> Response:
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse("static/index.html")
+
+
+@app.get("/app.js")
+def frontend_script() -> FileResponse:
+    return FileResponse("static/app.js")
+
+
+@app.get("/styles.css")
+def frontend_styles() -> FileResponse:
+    return FileResponse("static/styles.css")
 
 
 @app.get("/api/health")
@@ -256,12 +300,12 @@ def demo_script() -> DemoScript:
 @app.post("/api/demo/reset")
 def reset_demo() -> list[Ticket]:
     seed_golden_state()
-    return TICKETS
+    return [public_ticket(ticket) for ticket in TICKETS]
 
 
 @app.get("/api/tickets")
 def list_tickets() -> list[Ticket]:
-    return TICKETS
+    return [public_ticket(ticket) for ticket in TICKETS]
 
 
 @app.post("/api/grievances/submit", response_model=Ticket)
@@ -275,10 +319,13 @@ def submit_grievance(payload: CitizenPayload) -> Ticket:
             and ticket.category == category
             and check_spatial_match(payload.latitude, payload.longitude, ticket.representative_lat, ticket.representative_lon)
         ):
+            if is_duplicate_submission(payload.reporter_phone, ticket.ticket_id):
+                logger.info("Duplicate submission suppressed for reporter %s on ticket %s.", mask_phone(payload.reporter_phone), ticket.ticket_id)
+                return public_ticket(ticket)
             ticket.complaint_texts.append(payload.transcript_text)
             ticket.reporter_phones.append(payload.reporter_phone)
             ticket.urgency = "High" if "High" in [ticket.urgency, urgency] else "Medium"
-            return refresh_ticket(ticket)
+            return public_ticket(refresh_ticket(ticket))
     ticket = Ticket(
         ticket_id=f"cluster-{uuid.uuid4().hex[:8]}",
         title=title_for(category),
@@ -307,16 +354,19 @@ def dispatch_ticket(ticket_id: str) -> DispatchResponse:
         f"Urgency: {ticket.urgency}. Citizen reports: {' | '.join(ticket.complaint_texts)}"
     )
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    memo = (
+        "OFFICIAL DISPATCH ORDER - DEPT OF PUBLIC WORKS. "
+        f"Location: Point [{ticket.representative_lat}, {ticket.representative_lon}]. Urgency: {ticket.urgency}. "
+        f"Action Required: {ticket.ai_impact_synthesis}"
+    )
     if api_key:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"), contents=prompt)
-        memo = (response.text or "").strip()
-    else:
-        memo = (
-            "OFFICIAL DISPATCH ORDER - DEPT OF PUBLIC WORKS. "
-            f"Location: Point [{ticket.representative_lat}, {ticket.representative_lon}]. Urgency: {ticket.urgency}. "
-            f"Action Required: {ticket.ai_impact_synthesis}"
-        )
+        try:
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"), contents=prompt)
+            if response.text:
+                memo = response.text.strip()
+        except Exception as exc:
+            logger.warning("Gemini dispatch generation failed; using deterministic memo. Error: %s", exc)
     ticket.generated_dispatch_memo = memo
     ticket.status = "DISPATCHED"
     return DispatchResponse(ticket_id=ticket.ticket_id, generated_dispatch_memo=memo, status=ticket.status)
