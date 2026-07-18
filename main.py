@@ -7,12 +7,24 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from google import genai
 from pydantic import BaseModel, Field
+
+_client = None
+
+def get_genai_client() -> genai.Client | None:
+    global _client
+    if _client is not None:
+        return _client
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if api_key:
+        _client = genai.Client(api_key=api_key)
+        return _client
+    return None
 
 Category = Literal["Road Hazard", "Sanitation Breaches", "Grid Infrastructure"]
 Urgency = Literal["High", "Medium"]
@@ -106,8 +118,11 @@ def infer_metadata_locally(text: str) -> dict[str, str]:
 
 
 def parse_minified_json(raw: str) -> dict[str, str]:
-    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-    return json.loads(match.group(0) if match else raw)
+    try:
+        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        return json.loads(match.group(0) if match else raw)
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return {}
 
 
 def normalize_metadata(metadata: dict[str, str]) -> dict[str, str]:
@@ -126,15 +141,17 @@ def normalize_metadata(metadata: dict[str, str]) -> dict[str, str]:
 
 
 def extract_metadata(text: str) -> dict[str, str]:
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    if not api_key:
+    client = get_genai_client()
+    if not client:
         return normalize_metadata(infer_metadata_locally(text))
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-        contents=f"{METADATA_SYSTEM_INSTRUCTION}\nCitizen report: {text}",
-    )
-    parsed = parse_minified_json(response.text or "{}")
+    try:
+        response = client.models.generate_content(
+            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            contents=f"{METADATA_SYSTEM_INSTRUCTION}\nCitizen report: {text}",
+        )
+        parsed = parse_minified_json(response.text or "{}")
+    except Exception:
+        return normalize_metadata(infer_metadata_locally(text))
     return normalize_metadata({
         "category": parsed.get("category", "Road Hazard"),
         "urgency": parsed.get("urgency", "Medium"),
@@ -145,18 +162,20 @@ def synthesize_summary(ticket: Ticket) -> str:
     joined = " ".join(ticket.complaint_texts)
     if ticket.active_report_count <= 2:
         return f"{ticket.active_report_count} citizen report(s) logged for this localized {ticket.category.lower()} cluster. Monitoring continues for escalation signals."
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    if api_key:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-            contents=(
-                "Summarize these clustered municipal complaints in exactly two executive sentences, "
-                f"highlighting collective societal impact: {joined}"
-            ),
-        )
-        if response.text:
-            return response.text.strip()
+    client = get_genai_client()
+    if client:
+        try:
+            response = client.models.generate_content(
+                model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+                contents=(
+                    "Summarize these clustered municipal complaints in exactly two executive sentences, "
+                    f"highlighting collective societal impact: {joined}"
+                ),
+            )
+            if response.text:
+                return response.text.strip()
+        except Exception:
+            pass
     return (
         f"{ticket.active_report_count} unique citizens have verified a dangerous {ticket.category.lower()} hotspot near "
         f"the selected coordinate. Aggregated reports indicate recurring public-safety impact requiring rapid municipal triage."
@@ -216,20 +235,6 @@ def seed_golden_state() -> None:
 
 
 seed_golden_state()
-
-
-def apply_no_cache_cors_headers(response: Response) -> Response:
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Expose-Headers"] = "*"
-    response.headers["Access-Control-Max-Age"] = "86400"
-    return response
-
-
-@app.options("/{full_path:path}")
-def cors_preflight(full_path: str, response: Response) -> Response:
-    return apply_no_cache_cors_headers(response)
 
 
 @app.get("/")
@@ -306,11 +311,17 @@ def dispatch_ticket(ticket_id: str) -> DispatchResponse:
         f"{DISPATCH_SYSTEM_INSTRUCTION}\nLocation: Point [{ticket.representative_lat}, {ticket.representative_lon}]. "
         f"Urgency: {ticket.urgency}. Citizen reports: {' | '.join(ticket.complaint_texts)}"
     )
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    if api_key:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"), contents=prompt)
-        memo = (response.text or "").strip()
+    client = get_genai_client()
+    if client:
+        try:
+            response = client.models.generate_content(model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"), contents=prompt)
+            memo = (response.text or "").strip()
+        except Exception:
+            memo = (
+                "OFFICIAL DISPATCH ORDER - DEPT OF PUBLIC WORKS (FALLBACK). "
+                f"Location: Point [{ticket.representative_lat}, {ticket.representative_lon}]. Urgency: {ticket.urgency}. "
+                f"Action Required: {ticket.ai_impact_synthesis}"
+            )
     else:
         memo = (
             "OFFICIAL DISPATCH ORDER - DEPT OF PUBLIC WORKS. "
