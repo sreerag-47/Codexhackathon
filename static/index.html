@@ -52,7 +52,7 @@
     <section class="p-8">
       <div class="mb-6 flex items-center justify-between">
         <div><p class="text-xs uppercase tracking-[0.45em] text-rose-300">Density Matrix</p><h2 class="mt-2 text-4xl font-black">Live Work Queue</h2></div>
-        <button id="refresh" class="rounded-xl border border-white/10 px-4 py-2 text-sm font-bold text-slate-200">Refresh</button>
+        <div class="flex gap-2"><button id="reset" class="rounded-xl border border-rose-300/30 px-4 py-2 text-sm font-bold text-rose-100">Reset Demo</button><button id="refresh" class="rounded-xl border border-white/10 px-4 py-2 text-sm font-bold text-slate-200">Refresh</button></div>
       </div>
       <div id="tickets" class="space-y-4"></div>
     </section>
@@ -106,6 +106,12 @@
       renderMapNodes();
     }
 
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[char]));
+    }
+
     function renderMapNodes() {
       const group = document.getElementById('map-nodes');
       group.innerHTML = tickets.map(ticket => {
@@ -118,12 +124,17 @@
     function renderTickets() {
       document.getElementById('tickets').innerHTML = tickets.map(ticket => {
         const hot = ticket.active_report_count > 3;
+        const safeCategory = escapeHtml(ticket.category);
+        const safeTitle = escapeHtml(ticket.title);
+        const safeSynthesis = escapeHtml(ticket.ai_impact_synthesis);
+        const safeMemo = escapeHtml(ticket.generated_dispatch_memo);
+        const safeStatus = escapeHtml(ticket.status);
         return `<article class="rounded-3xl border ${hot ? 'border-rose-400/70 bg-rose-950/30' : 'border-white/10 bg-slate-950/70'} p-5 shadow-2xl">
-          <div class="flex items-start justify-between gap-3"><div><p class="text-sm font-black ${hot ? 'text-rose-200' : 'text-cyan-200'}">[${ticket.category}] ${ticket.active_report_count} Active Claims Combined</p><h3 class="mt-2 text-2xl font-black">${ticket.title}</h3></div><span class="rounded-full ${hot ? 'bg-rose-500 animate-pulse' : 'bg-amber-400'} px-3 py-1 text-xs font-black text-slate-950">${ticket.composite_severity}</span></div>
-          <p class="mt-4 text-slate-300">${ticket.ai_impact_synthesis}</p>
-          <div class="mt-4 grid grid-cols-3 gap-2 text-xs text-slate-400"><span>Lat ${ticket.representative_lat.toFixed(4)}</span><span>Lon ${ticket.representative_lon.toFixed(4)}</span><span>${ticket.status}</span></div>
+          <div class="flex items-start justify-between gap-3"><div><p class="text-sm font-black ${hot ? 'text-rose-200' : 'text-cyan-200'}">[${safeCategory}] ${ticket.active_report_count} Active Claims Combined</p><h3 class="mt-2 text-2xl font-black">${safeTitle}</h3></div><span class="rounded-full ${hot ? 'bg-rose-500 animate-pulse' : 'bg-amber-400'} px-3 py-1 text-xs font-black text-slate-950">${ticket.composite_severity}</span></div>
+          <p class="mt-4 text-slate-300">${safeSynthesis}</p>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-xs text-slate-400"><span>Lat ${ticket.representative_lat.toFixed(4)}</span><span>Lon ${ticket.representative_lon.toFixed(4)}</span><span>${safeStatus}</span></div>
           <button data-dispatch="${ticket.ticket_id}" class="mt-4 rounded-xl bg-white px-4 py-2 text-sm font-black text-slate-950">Generate Dispatch</button>
-          <pre class="mt-3 whitespace-pre-wrap rounded-xl bg-slate-950/80 p-3 text-xs text-slate-300">${ticket.generated_dispatch_memo}</pre>
+          <pre class="mt-3 whitespace-pre-wrap rounded-xl bg-slate-950/80 p-3 text-xs text-slate-300">${safeMemo}</pre>
         </article>`;
       }).join('');
       document.querySelectorAll('[data-dispatch]').forEach(button => button.addEventListener('click', async () => {
@@ -143,6 +154,11 @@
       await loadTickets();
     });
 
+    document.getElementById('reset').addEventListener('click', async () => {
+      await fetch('/api/demo/reset', { method: 'POST' });
+      statusEl.textContent = 'Demo reset to the golden four-report Road Hazard cluster.';
+      await loadTickets();
+    });
     document.getElementById('refresh').addEventListener('click', loadTickets);
     setPinFromCoords(Number(latEl.value), Number(lonEl.value));
     loadTickets();

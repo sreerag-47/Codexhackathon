@@ -71,6 +71,14 @@ class DispatchResponse(BaseModel):
     status: Status
 
 
+class DemoScript(BaseModel):
+    seeded_claims: int
+    starting_cluster: str
+    microphone_prompt: str
+    map_instruction: str
+    expected_result: str
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -99,20 +107,35 @@ def parse_minified_json(raw: str) -> dict[str, str]:
     return json.loads(match.group(0) if match else raw)
 
 
+def normalize_metadata(metadata: dict[str, str]) -> dict[str, str]:
+    category_aliases = {
+        "Sanitation": "Sanitation Breaches",
+        "Sanitation Breaches": "Sanitation Breaches",
+        "Grid Utility": "Grid Infrastructure",
+        "Grid Infrastructure": "Grid Infrastructure",
+        "Road Hazard": "Road Hazard",
+    }
+    urgency_aliases = {"High": "High", "Medium": "Medium"}
+    return {
+        "category": category_aliases.get(metadata.get("category", ""), "Road Hazard"),
+        "urgency": urgency_aliases.get(metadata.get("urgency", ""), "Medium"),
+    }
+
+
 def extract_metadata(text: str) -> dict[str, str]:
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
-        return infer_metadata_locally(text)
+        return normalize_metadata(infer_metadata_locally(text))
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
         contents=f"{METADATA_SYSTEM_INSTRUCTION}\nCitizen report: {text}",
     )
     parsed = parse_minified_json(response.text or "{}")
-    return {
+    return normalize_metadata({
         "category": parsed.get("category", "Road Hazard"),
         "urgency": parsed.get("urgency", "Medium"),
-    }
+    })
 
 
 def synthesize_summary(ticket: Ticket) -> str:
@@ -165,6 +188,7 @@ TICKETS: list[Ticket] = []
 
 
 def seed_golden_state() -> None:
+    TICKETS.clear()
     reports = [
         "There is a massive pothole right outside the main gate, vehicles are swerving wildly.",
         "Two scooters nearly crashed while avoiding the same road depression near the entrance.",
@@ -194,6 +218,28 @@ seed_golden_state()
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse("static/index.html")
+
+
+@app.get("/api/health")
+def health() -> dict[str, str | int]:
+    return {"status": "ok", "open_tickets": len([ticket for ticket in TICKETS if ticket.status == "OPEN"])}
+
+
+@app.get("/api/demo/script", response_model=DemoScript)
+def demo_script() -> DemoScript:
+    return DemoScript(
+        seeded_claims=4,
+        starting_cluster="[Road Hazard] 4 Active Claims Combined",
+        microphone_prompt="There is a massive pothole outside the main gate and traffic is swerving into oncoming vehicles.",
+        map_instruction="Click near the pre-seeded hot point at 10.0625, 76.5312 on the SVG grid.",
+        expected_result="The Road Hazard cluster increments from 4 to 5 without a page refresh and keeps flashing red.",
+    )
+
+
+@app.post("/api/demo/reset")
+def reset_demo() -> list[Ticket]:
+    seed_golden_state()
+    return TICKETS
 
 
 @app.get("/api/tickets")
