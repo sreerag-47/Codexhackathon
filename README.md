@@ -22,7 +22,7 @@ A hackathon-ready FastAPI + Tailwind demo for clustering citizen grievances by c
 - `POST /api/tickets/{ticket_id}/dispatch` to generate municipal dispatch memos.
 - Gemini / Google GenAI metadata extraction when `GOOGLE_API_KEY` or `GEMINI_API_KEY` is present.
 - Local deterministic metadata and dispatch fallbacks so demos still work without networked LLM access.
-- Tailwind dark-mode split-screen dashboard with speech recognition, an interactive SVG coordinate canvas, mock/live API toggle, and dispatch memo modal.
+- Tailwind dark-mode split-screen dashboard with speech recognition and an interactive SVG coordinate canvas.
 - `POST /api/demo/reset` to restore the golden presentation state instantly.
 
 ## Setup

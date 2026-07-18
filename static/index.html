@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Civic Pulse Spatial Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    body { background: radial-gradient(circle at 20% 20%, #164e63 0, #020617 38%, #0f172a 100%); }
+    .map-grid { background-image: linear-gradient(rgba(148,163,184,.12) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,.12) 1px, transparent 1px); background-size: 32px 32px; }
+  </style>
 </head>
 <body class="min-h-screen text-slate-100">
   <main class="grid min-h-screen grid-cols-1 lg:grid-cols-[50vw_50vw]">
@@ -49,7 +52,7 @@
     <section class="p-8">
       <div class="mb-6 flex items-center justify-between">
         <div><p class="text-xs uppercase tracking-[0.45em] text-rose-300">Density Matrix</p><h2 class="mt-2 text-4xl font-black">Live Work Queue</h2></div>
-        <div class="flex flex-wrap items-center gap-2"><label class="flex items-center gap-2 rounded-xl border border-cyan-300/30 px-3 py-2 text-sm font-bold text-cyan-100"><input id="mock-toggle" type="checkbox" class="accent-cyan-400" /> Mock API</label><button id="reset" class="rounded-xl border border-rose-300/30 px-4 py-2 text-sm font-bold text-rose-100">Reset Demo</button><button id="refresh" class="rounded-xl border border-white/10 px-4 py-2 text-sm font-bold text-slate-200">Refresh</button></div>
+        <div class="flex gap-2"><button id="reset" class="rounded-xl border border-rose-300/30 px-4 py-2 text-sm font-bold text-rose-100">Reset Demo</button><button id="refresh" class="rounded-xl border border-white/10 px-4 py-2 text-sm font-bold text-slate-200">Refresh</button></div>
       </div>
       <div id="tickets" class="space-y-4"></div>
     </section>

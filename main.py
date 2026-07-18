@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -51,8 +50,8 @@ app.add_middleware(
 class CitizenPayload(BaseModel):
     reporter_phone: str = Field(default="+919876543210")
     transcript_text: str
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
+    latitude: float
+    longitude: float
 
 
 class Ticket(BaseModel):
@@ -132,15 +131,9 @@ def normalize_metadata(metadata: dict[str, str]) -> dict[str, str]:
         "Road Hazard": "Road Hazard",
     }
     urgency_aliases = {"High": "High", "Medium": "Medium"}
-    raw_category = metadata.get("category", "")
-    raw_urgency = metadata.get("urgency", "")
-    if raw_category not in category_aliases:
-        logger.warning("Unrecognized category %r; falling back to Road Hazard.", raw_category)
-    if raw_urgency not in urgency_aliases:
-        logger.warning("Unrecognized urgency %r; falling back to Medium.", raw_urgency)
     return {
-        "category": category_aliases.get(raw_category, "Road Hazard"),
-        "urgency": urgency_aliases.get(raw_urgency, "Medium"),
+        "category": category_aliases.get(metadata.get("category", ""), "Road Hazard"),
+        "urgency": urgency_aliases.get(metadata.get("urgency", ""), "Medium"),
     }
 
 
@@ -148,21 +141,16 @@ def extract_metadata(text: str) -> dict[str, str]:
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
         return normalize_metadata(infer_metadata_locally(text))
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-            contents=f"{METADATA_SYSTEM_INSTRUCTION}\nCitizen report: {text}",
-        )
-        parsed = parse_minified_json(response.text or "{}")
-        if parsed:
-            return normalize_metadata({
-                "category": parsed.get("category", "Road Hazard"),
-                "urgency": parsed.get("urgency", "Medium"),
-            })
-    except Exception as exc:
-        logger.warning("Gemini metadata extraction failed; using local fallback. Error: %s", exc)
-    return normalize_metadata(infer_metadata_locally(text))
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        contents=f"{METADATA_SYSTEM_INSTRUCTION}\nCitizen report: {text}",
+    )
+    parsed = parse_minified_json(response.text or "{}")
+    return normalize_metadata({
+        "category": parsed.get("category", "Road Hazard"),
+        "urgency": parsed.get("urgency", "Medium"),
+    })
 
 
 def synthesize_summary(ticket: Ticket) -> str:
@@ -171,19 +159,16 @@ def synthesize_summary(ticket: Ticket) -> str:
         return f"{ticket.active_report_count} citizen report(s) logged for this localized {ticket.category.lower()} cluster. Monitoring continues for escalation signals."
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if api_key:
-        try:
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-                contents=(
-                    "Summarize these clustered municipal complaints in exactly two executive sentences, "
-                    f"highlighting collective societal impact: {joined}"
-                ),
-            )
-            if response.text:
-                return response.text.strip()
-        except Exception as exc:
-            logger.warning("Gemini summary synthesis failed; using deterministic summary. Error: %s", exc)
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            contents=(
+                "Summarize these clustered municipal complaints in exactly two executive sentences, "
+                f"highlighting collective societal impact: {joined}"
+            ),
+        )
+        if response.text:
+            return response.text.strip()
     return (
         f"{ticket.active_report_count} unique citizens have verified a dangerous {ticket.category.lower()} hotspot near "
         f"the selected coordinate. Aggregated reports indicate recurring public-safety impact requiring rapid municipal triage."
@@ -215,12 +200,10 @@ def refresh_ticket(ticket: Ticket) -> Ticket:
 
 
 TICKETS: list[Ticket] = []
-DEDUPE_CACHE: dict[tuple[str, str], datetime] = {}
 
 
 def seed_golden_state() -> None:
     TICKETS.clear()
-    DEDUPE_CACHE.clear()
     reports = [
         "There is a massive pothole right outside the main gate, vehicles are swerving wildly.",
         "Two scooters nearly crashed while avoiding the same road depression near the entrance.",
@@ -358,15 +341,11 @@ def submit_grievance(payload: CitizenPayload) -> Ticket:
         updated_at=now_iso(),
     )
     TICKETS.append(ticket)
-    DEDUPE_CACHE[(payload.reporter_phone, ticket.ticket_id)] = datetime.now(timezone.utc)
-    return public_ticket(ticket)
+    return ticket
 
 
 @app.post("/api/tickets/{ticket_id}/dispatch", response_model=DispatchResponse)
-def dispatch_ticket(ticket_id: str, x_dispatch_key: str | None = Header(default=None, alias="X-Dispatch-Key")) -> DispatchResponse:
-    required_key = os.getenv("DISPATCH_API_KEY")
-    if required_key and x_dispatch_key != required_key:
-        raise HTTPException(status_code=401, detail="Missing or invalid dispatch key")
+def dispatch_ticket(ticket_id: str) -> DispatchResponse:
     ticket = next((item for item in TICKETS if item.ticket_id == ticket_id), None)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
