@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Civic Pulse Spatial Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="min-h-screen text-slate-100">
+  <main class="grid min-h-screen grid-cols-1 lg:grid-cols-[50vw_50vw]">
+    <section class="border-r border-cyan-400/20 p-8">
+      <div class="mb-8">
+        <p class="text-xs uppercase tracking-[0.45em] text-cyan-300">Citizen Sandbox</p>
+        <h1 class="mt-3 text-5xl font-black tracking-tight">Civic Pulse</h1>
+        <p class="mt-3 text-slate-300">Speak, pin a location, and submit. Spatial clustering updates instantly.</p>
+      </div>
+
+      <form id="report-form" class="space-y-5 rounded-3xl border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
+        <label class="block text-sm font-semibold text-slate-300">Reporter phone</label>
+        <input id="phone" class="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 outline-none ring-cyan-400 focus:ring-2" value="+919876543210" />
+
+        <div class="flex items-center justify-between gap-3">
+          <label class="text-sm font-semibold text-slate-300">Live transcript</label>
+          <button id="mic" type="button" class="rounded-full bg-cyan-400 px-4 py-2 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-400/30">🎙️ Dictate</button>
+        </div>
+        <textarea id="transcript" rows="5" class="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 outline-none ring-cyan-400 focus:ring-2">There is a massive pothole right outside the main gate, vehicles are swerving wildly into oncoming traffic to avoid it.</textarea>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="text-sm font-semibold text-slate-300">Latitude</label><input id="lat" class="mt-2 w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3" value="10.0625" /></div>
+          <div><label class="text-sm font-semibold text-slate-300">Longitude</label><input id="lon" class="mt-2 w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3" value="76.5312" /></div>
+        </div>
+
+        <div class="rounded-2xl border border-cyan-300/20 bg-cyan-950/20 p-4">
+          <div class="mb-2 flex justify-between text-xs uppercase tracking-widest text-cyan-200"><span>Interactive SVG Grid</span><span id="coord-label">10.0625, 76.5312</span></div>
+          <svg id="map" viewBox="0 0 500 320" class="map-grid h-80 w-full cursor-crosshair rounded-xl border border-slate-700 bg-slate-900/80">
+            <defs><radialGradient id="hot" cx="50%" cy="50%"><stop offset="0%" stop-color="#ef4444"/><stop offset="100%" stop-color="#7f1d1d"/></radialGradient></defs>
+            <path d="M30 245 C130 210 160 125 265 146 S390 185 465 72" fill="none" stroke="#38bdf8" stroke-width="6" stroke-linecap="round" opacity=".55"/>
+            <g id="map-nodes"></g>
+            <circle id="pin" cx="250" cy="160" r="8" fill="#22d3ee" stroke="white" stroke-width="3"/>
+          </svg>
+        </div>
+
+        <button class="w-full rounded-2xl bg-gradient-to-r from-emerald-400 to-cyan-400 px-6 py-4 text-lg font-black text-slate-950 shadow-xl shadow-emerald-500/20">Submit Grievance</button>
+        <p id="status" class="text-sm text-emerald-300"></p>
+      </form>
+    </section>
+
+    <section class="p-8">
+      <div class="mb-6 flex items-center justify-between">
+        <div><p class="text-xs uppercase tracking-[0.45em] text-rose-300">Density Matrix</p><h2 class="mt-2 text-4xl font-black">Live Work Queue</h2></div>
+        <div class="flex flex-wrap items-center gap-2"><label class="flex items-center gap-2 rounded-xl border border-cyan-300/30 px-3 py-2 text-sm font-bold text-cyan-100"><input id="mock-toggle" type="checkbox" class="accent-cyan-400" /> Mock API</label><button id="reset" class="rounded-xl border border-rose-300/30 px-4 py-2 text-sm font-bold text-rose-100">Reset Demo</button><button id="refresh" class="rounded-xl border border-white/10 px-4 py-2 text-sm font-bold text-slate-200">Refresh</button></div>
+      </div>
+      <div id="tickets" class="space-y-4"></div>
+    </section>
+  </main>
+
+  <div id="dispatch-modal" class="modal-hidden fixed inset-0 z-50 bg-slate-950/80 p-6 backdrop-blur">
+    <div class="mx-auto mt-24 max-w-3xl rounded-3xl border border-cyan-300/30 bg-slate-900 p-6 shadow-2xl">
+      <div class="mb-4 flex items-center justify-between gap-3">
+        <h3 class="text-2xl font-black text-cyan-100">Dispatch Memo</h3>
+        <button id="close-modal" class="rounded-xl bg-white px-4 py-2 text-sm font-black text-slate-950">Close</button>
+      </div>
+      <pre id="dispatch-memo" class="whitespace-pre-wrap rounded-2xl bg-slate-950 p-4 text-sm text-slate-200"></pre>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
