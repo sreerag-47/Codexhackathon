@@ -59,6 +59,7 @@
   </main>
 
   <script>
+    const API_BASE = 'https://voxpop-ixt9.onrender.com';
     const latEl = document.getElementById('lat');
     const lonEl = document.getElementById('lon');
     const transcriptEl = document.getElementById('transcript');
@@ -100,7 +101,7 @@
     });
 
     async function loadTickets() {
-      const response = await fetch('/api/tickets');
+      const response = await fetch(`${API_BASE}/api/tickets`);
       tickets = await response.json();
       renderTickets();
       renderMapNodes();
@@ -138,14 +139,14 @@
         </article>`;
       }).join('');
       document.querySelectorAll('[data-dispatch]').forEach(button => button.addEventListener('click', async () => {
-        await fetch(`/api/tickets/${button.dataset.dispatch}/dispatch`, { method: 'POST' });
+        await fetch(`${API_BASE}/api/tickets/${button.dataset.dispatch}/dispatch`, { method: 'POST' });
         await loadTickets();
       }));
     }
 
     document.getElementById('report-form').addEventListener('submit', async (event) => {
       event.preventDefault();
-      const response = await fetch('/api/grievances/submit', {
+      const response = await fetch(`${API_BASE}/api/grievances/submit`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reporter_phone: document.getElementById('phone').value, transcript_text: transcriptEl.value, latitude: Number(latEl.value), longitude: Number(lonEl.value) })
       });
@@ -155,7 +156,7 @@
     });
 
     document.getElementById('reset').addEventListener('click', async () => {
-      await fetch('/api/demo/reset', { method: 'POST' });
+      await fetch(`${API_BASE}/api/demo/reset`, { method: 'POST' });
       statusEl.textContent = 'Demo reset to the golden four-report Road Hazard cluster.';
       await loadTickets();
     });
