@@ -1,0 +1,28 @@
+name: Reporting pipeline checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CIVIC_ENABLE_AI: "0"
+      CIVIC_DEMO_MODE: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m ruff check main.py reporting.py followup.py tests
+      - run: python -m unittest discover -s tests -v
+      - run: node scripts/check_frontend.mjs
+      - run: node --test tests/recovery.test.cjs
